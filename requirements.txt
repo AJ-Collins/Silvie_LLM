@@ -1,0 +1,32 @@
+# ── Core API ──────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+scalar-fastapi>=1.0.3
+
+# ── GGUF / Phi-3 inference (primary model) ────────────────
+llama-cpp-python>=0.2.90
+
+# ── Speech transcription (Whisper — pulls torch as dep) ───
+openai-whisper>=20231117
+
+# ── Torch — installed as whisper dependency.
+#    If you have a GPU locally, install manually instead:
+#      pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1.0
+
+# ── Data utilities ────────────────────────────────────────
+pandas>=2.1.0
+numpy>=1.23.0
+
+# ── Environment variable management (.env file support) ───
+python-dotenv>=1.0.0
+
+# ── HuggingFace (optional zero-shot NLI fallback only) ────
+# Only needed if keyword-based intent classification misses.
+# Downloads ~1.6GB facebook/bart-large-mnli on first use.
+# transformers>=4.40.0
+# accelerate>=0.27.0
+# sentencepiece
+# protobuf
