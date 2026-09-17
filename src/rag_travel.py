@@ -41,14 +41,23 @@ _DE_TRAVEL_PATTERNS = [
     r"reise\s+(?:nach|in)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)?)",
 ]
 
+_EN_TRAVEL_PATTERNS = [
+    r"(?:travel|trip|go|fly|drive)\s+to\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    r"(?:visit|visiting)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    r"vacation\s+in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    r"holiday\s+in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:trip|vacation|holiday|travel)",
+]
+
 def extract_destination(text: str) -> Optional[str]:
-    """Extract city/destination name from German text."""
-    for pattern in _DE_TRAVEL_PATTERNS:
+    patterns = _DE_TRAVEL_PATTERNS + _EN_TRAVEL_PATTERNS
+    for pattern in patterns:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
             dest = m.group(1).strip()
-            # Filter noise
-            if len(dest) > 2 and dest.lower() not in {"ich", "wir", "sie", "er", "es"}:
+            if len(dest) > 2 and dest.lower() not in {
+                "ich", "wir", "sie", "er", "es", "i", "we", "you", "he", "she"
+            }:
                 return dest
     return None
 

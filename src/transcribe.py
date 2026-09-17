@@ -1,77 +1,121 @@
 """
-src/transcribe.py — Speech-to-text using OpenAI Whisper (local, runs on CPU).
-
-Whisper model sizes and trade-offs:
-  tiny   ~39M params  fastest, lower accuracy  — good for prototyping
-  base   ~74M params  fast, decent accuracy    — recommended default
-  small  ~244M params balanced                 — best for production seniors UX
-  medium ~769M params high accuracy            — use if GPU available
-
-The model is loaded once on first call and cached for the server lifetime.
+src/transcribe.py
 """
 
-import functools
 import logging
+import os
+import subprocess
+import tempfile
+import torch
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Lazy model cache
-_whisper_model = None
-WHISPER_MODEL_SIZE = "base"
+_whisper_model     = None
+WHISPER_MODEL_SIZE = "small"
 
 
 def _get_model():
-    """Load Whisper model once and reuse."""
     global _whisper_model
     if _whisper_model is None:
-        try:
-            import whisper
-        except ImportError:
-            raise RuntimeError(
-                "openai-whisper is not installed. "
-                "Run: pip install openai-whisper"
-            )
-        logger.info(f"Loading Whisper '{WHISPER_MODEL_SIZE}' model…")
-        _whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
-        logger.info("Whisper model loaded.")
+        import whisper, torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Loading Whisper '{WHISPER_MODEL_SIZE}' on {device}…")
+        _whisper_model = whisper.load_model(WHISPER_MODEL_SIZE, device=device)
+        logger.info(f"Whisper model loaded on {device}.")
     return _whisper_model
 
 
-# Public API 
-def transcribe_audio(file_path: str, language: str = "de") -> str:
-    """
-    Transcribe an audio file to text using Whisper.
+def _convert_to_wav_16k(input_path: str) -> str:
+    """Convert any audio format to 16kHz mono WAV using ffmpeg."""
+    out_path = input_path + "_16k.wav"
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", input_path,
+            "-ar", "16000",
+            "-ac", "1",
+            "-sample_fmt", "s16",
+            out_path,
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"ffmpeg conversion failed: {result.stderr.decode()}")
+    return out_path
 
-    Parameters
-    ----------
-    file_path : str
-        Path to the audio file (wav / m4a / mp3 / webm).
-        React Native's expo-av saves recordings as .m4a by default.
-    language : str
-        ISO language code hint for Whisper. Defaults to "en".
-        Pass None to let Whisper auto-detect (slower).
 
-    Returns
-    -------
-    str
-        Transcribed text, stripped of leading/trailing whitespace.
-
-    Raises
-    ------
-    RuntimeError
-        If Whisper is not installed or transcription fails.
-    """
-    whisper_model = _get_model()
-
-    options = {
-        "fp16": False,          # CPU-safe — no half-precision on CPU
-        "language": language,   # skip language detection → faster
-        "task": "transcribe",
-    }
-
+def _validate_audio(wav_path: str) -> None:
+    """Raise if audio is too short to transcribe."""
+    import wave
     try:
-        result = whisper_model.transcribe(file_path, **options)
-        return result["text"].strip()
-    except Exception as exc:
-        logger.error(f"Whisper transcription failed for {file_path}: {exc}")
-        raise RuntimeError(str(exc)) from exc
+        with wave.open(wav_path, "rb") as wf:
+            duration = wf.getnframes() / wf.getframerate()
+            if duration < 0.3:
+                raise ValueError(f"Audio too short: {duration:.2f}s")
+    except wave.Error as e:
+        raise ValueError(f"Invalid wav file: {e}")
+
+ALLOWED_LANGUAGES = {"de", "en"}
+
+def transcribe_audio(
+    file_path:            str,
+    language:             Optional[str] = None,
+    auto_detect_language: bool          = True,
+) -> Tuple[str, str]:
+    converted_path = None
+    try:
+        # Step 1 — normalize to 16kHz mono WAV (fixes webm/m4a/wrong-rate inputs)
+        converted_path = _convert_to_wav_16k(file_path)
+
+        # Step 2 — validate before touching GPU
+        _validate_audio(converted_path)
+
+        # Step 3 — transcribe
+        whisper_model = _get_model()
+
+        options: dict = {
+            "fp16":         torch.cuda.is_available(),
+            "task":         "transcribe",
+            "beam_size":    5,         # ← was default 1 — improves accuracy ~15%
+            "best_of":      5,
+            "temperature":  0.0,       # deterministic — no hallucinations
+            "condition_on_previous_text": False,  # prevents compounding errors
+        }
+
+        if language:
+            options["language"] = language
+        elif auto_detect_language:
+            pass  # let Whisper auto-detect
+        else:
+            options["language"] = "de"
+
+        try:
+            result = whisper_model.transcribe(converted_path, **options)
+        except Exception as exc:
+            logger.error(f"Whisper transcription failed for {file_path}: {exc}")
+            raise RuntimeError(str(exc)) from exc
+
+        transcript        = result["text"].strip()
+        detected_language = result.get("language") or language or "en"
+
+        if detected_language not in ALLOWED_LANGUAGES:
+            logger.warning(f"Detected language '{detected_language}' not supported — rejecting")
+            raise ValueError(
+                f"UNSUPPORTED_LANGUAGE:{detected_language}"
+            )
+
+        logger.info(f"Transcribed: '{transcript[:60]}…' | detected_language='{detected_language}'")
+        return transcript, detected_language
+
+    finally:
+        if converted_path and os.path.exists(converted_path):
+            os.remove(converted_path)
+
+
+def transcribe_audio_simple(
+    file_path: str,
+    language:  str = "de",
+) -> str:
+    transcript, _ = transcribe_audio(file_path, language=language)
+    return transcript
